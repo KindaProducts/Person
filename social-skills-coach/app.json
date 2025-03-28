@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "Social Skills Coach",
+    "slug": "social-skills-coach",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.yourcompany.socialskillscoach"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "package": "com.yourcompany.socialskillscoach"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "description": "An app to help adults improve their social skills through AI-powered conversation practice, real-time feedback, and progress tracking.",
+    "primaryColor": "#007bff"
+  }
+}
