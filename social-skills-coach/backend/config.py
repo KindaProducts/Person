@@ -9,14 +9,23 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Database settings
-DB_USER = os.environ.get('DB_USER', 'postgres')
-DB_PASSWORD = os.environ.get('DB_PASSWORD', 'postgres')
-DB_HOST = os.environ.get('DB_HOST', 'localhost')
+DB_USER = os.environ.get('DB_USER', 'neondb_owner')
+DB_PASSWORD = os.environ.get('DB_PASSWORD', 'npg_3vM7YgNJmWrP')
+DB_HOST = os.environ.get('DB_HOST', 'ep-wild-pine-a6z492pc-pooler.us-west-2.aws.neon.tech')
 DB_PORT = os.environ.get('DB_PORT', '5432')
-DB_NAME = os.environ.get('DB_NAME', 'social_skills_db')
+DB_NAME = os.environ.get('DB_NAME', 'neondb')
 
-# Database URI
-SQLALCHEMY_DATABASE_URI = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+# Database URI - prefer direct DATABASE_URL if available
+DATABASE_URL = os.environ.get('DATABASE_URL')
+if DATABASE_URL:
+    # SQLAlchemy requires postgresql:// not postgres://
+    if DATABASE_URL.startswith('postgres://'):
+        SQLALCHEMY_DATABASE_URI = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
+    else:
+        SQLALCHEMY_DATABASE_URI = DATABASE_URL
+else:
+    SQLALCHEMY_DATABASE_URI = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}?sslmode=require"
+
 SQLALCHEMY_TRACK_MODIFICATIONS = False
 
 # JWT Settings

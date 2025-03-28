@@ -1,65 +1,169 @@
+#!/usr/bin/env python3
 """
-Script to create the PostgreSQL database and tables for the Social Skills Coach application.
-
-Run this script after setting up PostgreSQL and before starting the application 
-for the first time to initialize the database schema.
+Script to initialize and set up the database for the Social Skills Coach API.
+This will create all necessary tables defined in the app models.
 """
 
-from app import app, db
-import psycopg2
-from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+import os
+import sys
+from flask import Flask
+from flask_sqlalchemy import SQLAlchemy
 import config
+import sqlalchemy as sa
+from sqlalchemy import inspect
+import psycopg2
 
-def create_database():
-    """Create the PostgreSQL database if it doesn't exist."""
+def test_connection():
+    """Test the PostgreSQL connection using psycopg2 directly."""
+    print("\nTesting database connection...")
+
     try:
-        # Connect to PostgreSQL server
-        conn = psycopg2.connect(
-            user=config.DB_USER,
-            password=config.DB_PASSWORD,
-            host=config.DB_HOST,
-            port=config.DB_PORT
-        )
-        conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
-        
-        # Create a cursor
-        cursor = conn.cursor()
-        
-        # Check if database already exists
-        cursor.execute("SELECT 1 FROM pg_catalog.pg_database WHERE datname = %s", (config.DB_NAME,))
-        exists = cursor.fetchone()
-        
-        if not exists:
-            # Create the database
-            print(f"Creating database '{config.DB_NAME}'...")
-            cursor.execute(f"CREATE DATABASE {config.DB_NAME}")
-            print(f"Database '{config.DB_NAME}' created successfully!")
+        # Create connection string - use URI without SQLAlchemy specific parts
+        if config.DATABASE_URL:
+            # Extract connection info from URL - remove ?sslmode=require for raw psycopg2
+            conn_parts = config.DATABASE_URL.split('?')[0]
+            conn_string = conn_parts
         else:
-            print(f"Database '{config.DB_NAME}' already exists!")
+            conn_string = f"postgresql://{config.DB_USER}:{config.DB_PASSWORD}@{config.DB_HOST}:{config.DB_PORT}/{config.DB_NAME}"
+        
+        print(f"Connecting to: {conn_string.replace(config.DB_PASSWORD, '********')}")
+        
+        # Connect to the database
+        connection = psycopg2.connect(conn_string)
+        cursor = connection.cursor()
+        
+        # Get database version
+        cursor.execute("SELECT version();")
+        db_version = cursor.fetchone()
+        print(f"PostgreSQL version: {db_version[0]}")
         
         # Close connection
         cursor.close()
-        conn.close()
-        
+        connection.close()
+        print("Database connection successful!")
         return True
     except Exception as e:
-        print(f"Error creating database: {str(e)}")
+        print(f"Error connecting to database: {str(e)}")
         return False
 
-def create_tables():
-    """Create the database tables using SQLAlchemy."""
+def create_app():
+    """Create a minimal Flask app for database operations."""
+    print("Creating Flask application...")
+    app = Flask(__name__)
+    
+    # Configure the SQLAlchemy database
+    app.config['SQLALCHEMY_DATABASE_URI'] = config.SQLALCHEMY_DATABASE_URI
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = config.SQLALCHEMY_TRACK_MODIFICATIONS
+    
+    # Initialize the database
+    db = SQLAlchemy(app)
+    
+    # Define minimal models here to avoid circular imports
+    class User(db.Model):
+        __tablename__ = 'users'
+        id = db.Column(db.Integer, primary_key=True)
+        email = db.Column(db.String(120), unique=True, nullable=False)
+        password_hash = db.Column(db.String(255), nullable=False)
+    
+    class Conversation(db.Model):
+        __tablename__ = 'conversations'
+        id = db.Column(db.Integer, primary_key=True)
+        user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+        timestamp = db.Column(db.DateTime, nullable=False)
+        user_input = db.Column(db.Text, nullable=False)
+        ai_response = db.Column(db.Text, nullable=False)
+    
+    class Feedback(db.Model):
+        __tablename__ = 'feedbacks'
+        id = db.Column(db.Integer, primary_key=True)
+        conversation_id = db.Column(db.Integer, db.ForeignKey('conversations.id'), nullable=False)
+        feedback_text = db.Column(db.Text, nullable=False)
+    
+    return app, db, User, Conversation, Feedback
+
+def create_tables(app, db):
+    """Create all database tables if they don't exist."""
+    print("\nCreating database tables...")
+    
     try:
-        print("Creating tables...")
         with app.app_context():
+            # Create all tables
             db.create_all()
-        print("Tables created successfully!")
-        return True
+            print("Database tables created successfully!")
+            
+            # Check if tables were created using inspector
+            inspector = inspect(db.engine)
+            table_names = inspector.get_table_names()
+            print(f"Total tables created: {len(table_names)}")
+            
+            if "users" in table_names:
+                print("- Users table created successfully")
+                # Show columns in users table
+                columns = [col['name'] for col in inspector.get_columns('users')]
+                print(f"  Columns: {', '.join(columns)}")
+            else:
+                print("- Warning: Users table not created")
+                
+            if "conversations" in table_names:
+                print("- Conversations table created successfully")
+            else:
+                print("- Warning: Conversations table not created")
+                
+            if "feedbacks" in table_names:
+                print("- Feedbacks table created successfully")
+            else:
+                print("- Warning: Feedbacks table not created")
+                
+            return True
     except Exception as e:
-        print(f"Error creating tables: {str(e)}")
+        print(f"Error creating database tables: {str(e)}")
         return False
+
+def create_test_user(app, db, User):
+    """Create a test user if no users exist."""
+    with app.app_context():
+        try:
+            user_count = db.session.query(User).count()
+            if user_count == 0:
+                print("\nCreating test user...")
+                
+                # Import passlib for password hashing
+                from passlib.hash import sha256_crypt
+                
+                # Create new user
+                test_user = User(
+                    email="test@example.com",
+                    password_hash=sha256_crypt.hash("password123")
+                )
+                db.session.add(test_user)
+                db.session.commit()
+                print("Test user created successfully:")
+                print("- Email: test@example.com")
+                print("- Password: password123")
+            else:
+                print(f"\nSkipping test user creation: {user_count} users already exist")
+        except Exception as e:
+            print(f"Error creating test user: {str(e)}")
 
 if __name__ == "__main__":
-    if create_database():
-        create_tables()
+    print("=================================================")
+    print("SOCIAL SKILLS COACH DATABASE INITIALIZATION")
+    print("=================================================")
+    print(f"Database URL: {config.SQLALCHEMY_DATABASE_URI.replace(config.DB_PASSWORD, '********')}")
+    
+    # First test direct connection
+    if test_connection():
+        # Create Flask app and DB 
+        app, db, User, Conversation, Feedback = create_app()
+        
+        if create_tables(app, db):
+            create_test_user(app, db, User)
+            print("\nDatabase initialization complete!")
+        else:
+            print("\nDatabase initialization failed at table creation.")
+            sys.exit(1)
     else:
-        print("Failed to create database. Tables not created.") 
+        print("\nDatabase initialization failed at connection test.")
+        sys.exit(1)
+        
+    print("=================================================") 

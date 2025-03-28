@@ -1,393 +1,208 @@
 # Social Skills Coach API
 
-This is the backend API for the Social Skills Coach application, which helps users improve their social skills through AI-powered conversation practice and feedback.
+A Flask-based API for a social skills coaching application that provides conversation practice, feedback, and progress tracking.
 
 ## Setup
 
 ### Prerequisites
+- Python 3.9+
+- PostgreSQL database (a Neon database is already configured)
 
-1. Install PostgreSQL on your system
-   - On Windows/Mac: Download and install from [postgresql.org](https://www.postgresql.org/download/)
-   - On Ubuntu: `sudo apt install postgresql postgresql-contrib`
+### Installation
 
-2. Create a PostgreSQL user and set the password (optional)
-   ```
-   sudo -u postgres psql
-   CREATE USER postgres WITH PASSWORD 'postgres';
-   ALTER USER postgres WITH SUPERUSER;
-   \q
-   ```
+1. Clone the repository
+```bash
+git clone https://github.com/KindaProducts/Person.git
+cd Person/social-skills-coach/backend
+```
 
-### Application Setup
+2. Create a virtual environment and activate it
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
 
-1. Create a virtual environment:
-   ```
-   python -m venv venv
-   ```
+3. Install dependencies
+```bash
+pip install -r requirements.txt
+```
 
-2. Activate the virtual environment:
-   - On Windows: `venv\Scripts\activate`
-   - On macOS/Linux: `source venv/bin/activate`
+4. Configure environment variables
+The `.env` file contains sensitive information such as database credentials and API keys. Make sure to update:
+- `OPENAI_API_KEY` with your OpenAI API key
+- `JWT_SECRET_KEY` with a secure random string for production
 
-3. Install dependencies:
-   ```
-   pip install -r requirements.txt
-   ```
+The database is already configured with Neon PostgreSQL:
+```
+DATABASE_URL=postgresql://neondb_owner:npg_3vM7YgNJmWrP@ep-wild-pine-a6z492pc-pooler.us-west-2.aws.neon.tech/neondb?sslmode=require
+```
 
-4. Create the PostgreSQL database and tables:
-   ```
-   python create_db.py
-   ```
+5. Initialize the database
+```bash
+python create_db.py
+```
 
-5. Run the application:
-   ```
-   python app.py
-   ```
+6. Run the application
+```bash
+flask run --host=0.0.0.0 --port=8000
+```
 
-The API will start at `http://localhost:8000`.
+The API will start on `http://localhost:8000`
 
-## Configuration
+## Database Information
 
-Database credentials and other settings can be configured through environment variables:
+The application uses [Neon PostgreSQL](https://neon.tech/), a fully managed serverless Postgres service:
 
-- `DB_USER`: PostgreSQL username (default: "postgres")
-- `DB_PASSWORD`: PostgreSQL password (default: "postgres")
-- `DB_HOST`: PostgreSQL host (default: "localhost")
-- `DB_PORT`: PostgreSQL port (default: "5432")
-- `DB_NAME`: PostgreSQL database name (default: "social_skills_db")
-- `JWT_SECRET_KEY`: Secret key for JWT token generation (default: "your-secret-key")
-- `OPENAI_API_KEY`: OpenAI API key (default: "your-api-key")
-- `DEBUG`: Enable debug mode (default: True)
-- `HOST`: Host to bind the application to (default: "0.0.0.0")
-- `PORT`: Port to run the application on (default: 8000)
-
-## Database Models
-
-The application uses three main models:
-
-1. **User**
-   - `id`: Primary key
-   - `email`: User's email address (unique)
-   - `password_hash`: Hashed password
-
-2. **Conversation**
-   - `id`: Primary key
-   - `user_id`: Foreign key referencing User.id
-   - `timestamp`: When the conversation occurred
-   - `user_input`: The user's message
-   - `ai_response`: The AI's response
-
-3. **Feedback**
-   - `id`: Primary key
-   - `conversation_id`: Foreign key referencing Conversation.id
-   - `feedback_text`: The feedback provided on the conversation
+- **Database Name**: neondb
+- **Host**: ep-wild-pine-a6z492pc-pooler.us-west-2.aws.neon.tech
+- **Port**: 5432
+- **Connection String**: Already configured in .env file
 
 ## API Endpoints
 
 ### Authentication
 
 #### Register a new user
-
 - **URL**: `/api/register`
 - **Method**: `POST`
 - **Body**:
-  ```json
-  {
-    "email": "user@example.com",
-    "password": "securepassword"
-  }
-  ```
-- **Success Response**:
-  - **Code**: 201
-  - **Content**:
-    ```json
-    {
-      "success": true,
-      "message": "User registered successfully"
-    }
-    ```
-- **Error Response**:
-  - **Code**: 400
-  - **Content**:
-    ```json
-    {
-      "success": false,
-      "message": "Email already registered"
-    }
-    ```
+```json
+{
+  "email": "user@example.com",
+  "password": "password123"
+}
+```
+- **Success Response**: 
+```json
+{
+  "success": true,
+  "message": "User registered successfully"
+}
+```
+- **Error Response**: 
+```json
+{
+  "success": false,
+  "message": "Email already registered"
+}
+```
 
-#### User Login
-
+#### Login
 - **URL**: `/api/login`
 - **Method**: `POST`
 - **Body**:
-  ```json
-  {
+```json
+{
+  "email": "user@example.com",
+  "password": "password123"
+}
+```
+- **Success Response**: 
+```json
+{
+  "success": true,
+  "message": "Login successful",
+  "access_token": "JWT_TOKEN_HERE",
+  "user": {
     "email": "user@example.com",
-    "password": "securepassword"
+    "id": 1
   }
-  ```
-- **Success Response**:
-  - **Code**: 200
-  - **Content**:
-    ```json
-    {
-      "success": true,
-      "message": "Login successful",
-      "access_token": "jwt-token-here",
-      "user": {
-        "email": "user@example.com",
-        "id": "user-id-here"
-      }
-    }
-    ```
-- **Error Response**:
-  - **Code**: 401
-  - **Content**:
-    ```json
-    {
-      "success": false,
-      "message": "Invalid credentials"
-    }
-    ```
-
-### AI Conversation
-
-#### Get AI response to a user message
-
-- **URL**: `/api/conversation`
-- **Method**: `POST`
-- **Authentication**: Optional (JWT Token)
-- **Body**:
-  ```json
-  {
-    "user_input": "I get nervous when talking to new people at social events. How can I start conversations more easily?"
-  }
-  ```
-- **Success Response**:
-  - **Code**: 200
-  - **Content**:
-    ```json
-    {
-      "success": true,
-      "response": "Starting conversations can be challenging! Try preparing a few open-ended questions beforehand, like asking about the event, current news, or shared interests. Remember that most people enjoy talking about themselves, so showing genuine interest can help break the ice. Also, positioning yourself near the food or drink area can give you natural conversation starters.",
-      "feedback": "Good job with your communication!"
-    }
-    ```
-- **Error Response**:
-  - **Code**: 400
-  - **Content**:
-    ```json
-    {
-      "success": false,
-      "message": "User input is required"
-    }
-    ```
-  - **Code**: 500
-  - **Content**:
-    ```json
-    {
-      "success": false,
-      "message": "Error generating response: API error"
-    }
-    ```
-- **Notes**:
-  - If used with authentication, the conversation will be stored in the user's history
-  - Without authentication, the response is generated but not stored
-
-### Sentiment Analysis Feedback
-
-#### Get feedback on a user message
-
-- **URL**: `/api/feedback`
-- **Method**: `POST`
-- **Body**:
-  ```json
-  {
-    "user_input": "I love talking to new people and making connections"
-  }
-  ```
-- **Success Response**:
-  - **Code**: 200
-  - **Content**:
-    ```json
-    {
-      "success": true,
-      "feedback": "Good response!",
-      "analysis": {
-        "polarity": 0.5,
-        "word_count": 8
-      }
-    }
-    ```
-- **Error Response**:
-  - **Code**: 400
-  - **Content**:
-    ```json
-    {
-      "success": false,
-      "message": "User input is required"
-    }
-    ```
-- **Notes**:
-  - Feedback rules:
-    - If sentiment is negative (polarity < 0): "Try to sound more positive"
-    - If message is too short (< 5 words): "Try to elaborate more"
-    - Otherwise: "Good response!"
+}
+```
+- **Error Response**: 
+```json
+{
+  "success": false,
+  "message": "Invalid credentials"
+}
+```
 
 ### Conversation Practice
 
-#### Start or continue a practice conversation
-
-- **URL**: `/api/practice`
+#### Practice conversation with AI coach
+- **URL**: `/api/conversation`
 - **Method**: `POST`
-- **Authentication**: Required (JWT Token)
+- **Authentication**: JWT token optional
 - **Body**:
-  ```json
-  {
-    "message": "Hello, I'm practicing my social skills."
-  }
-  ```
-- **Success Response**:
-  - **Code**: 200
-  - **Content**:
-    ```json
-    {
-      "response": "That's great! Can you tell me more about how you would handle this situation?",
-      "feedback": "Try to speak more confidently and make eye contact. Your response was clear, but could include more specific details."
-    }
-    ```
+```json
+{
+  "user_input": "I feel nervous before social events"
+}
+```
+- **Success Response**: 
+```json
+{
+  "success": true,
+  "response": "It's completely normal to feel nervous. Here are some strategies to help...",
+  "feedback": "Try to be more specific about what makes you nervous"
+}
+```
 
 #### Get conversation history
-
 - **URL**: `/api/practice`
 - **Method**: `GET`
-- **Authentication**: Required (JWT Token)
-- **Success Response**:
-  - **Code**: 200
-  - **Content**:
-    ```json
-    [
-      {
-        "user_email": "user@example.com",
-        "user_message": "Hello, I'm practicing my social skills.",
-        "ai_response": "That's great! Can you tell me more about how you would handle this situation?",
-        "feedback": "Try to speak more confidently and make eye contact. Your response was clear, but could include more specific details.",
-        "timestamp": "2023-10-15 14:30:45"
-      }
-    ]
-    ```
+- **Authentication**: JWT token required
+- **Success Response**: Array of conversation objects
+
+### Feedback
+
+#### Get feedback on communication
+- **URL**: `/api/feedback`
+- **Method**: `POST`
+- **Authentication**: None required
+- **Body**:
+```json
+{
+  "user_input": "I am sorry but I think I'm not good at talking to people"
+}
+```
+- **Success Response**: 
+```json
+{
+  "success": true,
+  "feedback": "Try to avoid apologizing too much in your conversations. Consider making more definitive statements instead of prefacing with 'I think' to sound more confident.",
+  "analysis": {
+    "polarity": -0.15,
+    "subjectivity": 0.7,
+    "word_count": 12,
+    "pattern_matches": ["Try to avoid apologizing too much in your conversations."]
+  }
+}
+```
 
 ### Progress Tracking
 
 #### Get progress data
-
 - **URL**: `/api/progress`
 - **Method**: `GET`
-- **Authentication**: Required (JWT Token)
-- **Success Response**:
-  - **Code**: 200
-  - **Content**:
-    ```json
-    {
-      "conversation_count": [5, 8, 12, 10],
-      "week_labels": ["Week 1", "Week 2", "Week 3", "Week 4"],
-      "skill_scores": [
-        {"skill": "Conversation Flow", "score": 78},
-        {"skill": "Active Listening", "score": 65},
-        {"skill": "Empathy", "score": 82},
-        {"skill": "Clarity", "score": 70}
-      ]
-    }
-    ```
+- **Authentication**: JWT token required
+- **Success Response**: Progress tracking data
 
-## Testing the API
+## Performance Features
 
-### Using Postman
+The API includes several optimizations:
 
-1. **Register a new user**:
-   - Create a POST request to `http://localhost:8000/api/register`
-   - Set body to raw JSON with email and password
-   - Send the request
+1. **Caching**: Conversation responses are cached using an LRU cache to improve response times
+2. **Rate limiting**: Endpoints are protected with rate limiting to prevent abuse
+3. **Error handling**: Robust error handling with fallbacks for external service failures
+4. **Performance monitoring**: All major functions track execution time
 
-2. **Login**:
-   - Create a POST request to `http://localhost:8000/api/login`
-   - Set body to raw JSON with email and password
-   - Send the request and copy the access_token from the response
+## Testing
 
-3. **Test the Conversation Endpoint**:
-   - Create a POST request to `http://localhost:8000/api/conversation`
-   - Set body to raw JSON with a user_input field
-   - For authenticated requests:
-     - Add an Authorization header with value `Bearer {your-token}`
-   - Send the request
+To test the API endpoints:
 
-4. **Test the Feedback Endpoint**:
-   - Create a POST request to `http://localhost:8000/api/feedback`
-   - Set body to raw JSON with a user_input field
-   - Send the request
-
-5. **Test protected endpoints**:
-   - Add Authorization header with value `Bearer {your-token}` to all requests
-   - Create requests to `/api/practice` or `/api/progress` endpoints
-
-### Using curl
-
-1. **Register**:
-   ```
-   curl -X POST http://localhost:8000/api/register \
-     -H "Content-Type: application/json" \
-     -d '{"email":"test@example.com","password":"password123"}'
-   ```
-
-2. **Login**:
-   ```
-   curl -X POST http://localhost:8000/api/login \
-     -H "Content-Type: application/json" \
-     -d '{"email":"test@example.com","password":"password123"}'
-   ```
-
-3. **Use the conversation endpoint (anonymous)**:
-   ```
-   curl -X POST http://localhost:8000/api/conversation \
-     -H "Content-Type: application/json" \
-     -d '{"user_input":"I get nervous when talking to new people at social events. How can I start conversations more easily?"}'
-   ```
-
-4. **Use the feedback endpoint**:
-   ```
-   curl -X POST http://localhost:8000/api/feedback \
-     -H "Content-Type: application/json" \
-     -d '{"user_input":"I hate this"}'
-   ```
-
-5. **Use the conversation endpoint (authenticated)**:
-   ```
-   curl -X POST http://localhost:8000/api/conversation \
-     -H "Content-Type: application/json" \
-     -H "Authorization: Bearer {your-token}" \
-     -d '{"user_input":"How can I improve my active listening skills during conversations?"}'
-   ```
-
-6. **Use other protected endpoints**:
-   ```
-   curl -X GET http://localhost:8000/api/practice \
-     -H "Authorization: Bearer {your-token}"
-   ```
-
-## Using the Test Scripts
-
-The project includes test scripts to help verify the API functionality:
-
-1. **test_auth.py** - Tests user registration and login
-2. **test_conversation.py** - Tests the conversation endpoint with and without authentication
-3. **test_feedback.py** - Tests the sentiment analysis feedback endpoint
-
-Run the tests with:
-```
-python test_auth.py
-python test_conversation.py
-python test_feedback.py
+```bash
+python test_endpoints.py
 ```
 
-> Note: Make sure the server is running before executing the test scripts. 
+This script will run tests on all endpoints including cache performance, rate limiting, and concurrent request handling.
+
+## Security
+
+- Passwords are hashed using SHA-256
+- API authentication uses JWT tokens
+- SSL is required for database connections
+- Input validation on all endpoints
+
+## License
+This project is licensed under the MIT License. 
