@@ -3,11 +3,12 @@ from flask_restful import Api, Resource
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from passlib.hash import sha256_crypt
-from datetime import timedelta, datetime
+from datetime import timedelta, datetime, date
 import uuid
 from openai import OpenAI
 from textblob import TextBlob
 from flask_sqlalchemy import SQLAlchemy
+from flask_migrate import Migrate
 import config
 import functools
 import time
@@ -34,6 +35,7 @@ app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=1)
 
 # Initialize extensions
 db = SQLAlchemy(app)
+migrate = Migrate(app, db)
 jwt = JWTManager(app)
 
 # OpenAI Configuration
@@ -133,12 +135,23 @@ class User(db.Model):
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
     
+    # Subscription related fields
+    stripe_customer_id = db.Column(db.String(255), nullable=True)
+    subscription_id = db.Column(db.String(255), nullable=True)
+    subscription_status = db.Column(db.String(50), nullable=True)
+    tier = db.Column(db.String(50), default='free')
+    scenarios_accessed = db.Column(db.Integer, default=0)
+    last_reset = db.Column(db.Date, default=date.today)
+    
     # Relationships
     conversations = db.relationship('Conversation', backref='user', lazy=True, cascade='all, delete-orphan')
     
     def __init__(self, email, password):
         self.email = email
         self.password_hash = sha256_crypt.hash(password)
+        self.tier = 'free'
+        self.scenarios_accessed = 0
+        self.last_reset = date.today()
     
     def verify_password(self, password):
         return sha256_crypt.verify(password, self.password_hash)

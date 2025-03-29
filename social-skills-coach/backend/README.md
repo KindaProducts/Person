@@ -42,7 +42,12 @@ DATABASE_URL=postgresql://neondb_owner:npg_3vM7YgNJmWrP@ep-wild-pine-a6z492pc-po
 python create_db.py
 ```
 
-6. Run the application
+6. Run database migrations
+```bash
+flask db upgrade
+```
+
+7. Run the application
 ```bash
 flask run --host=0.0.0.0 --port=8000
 ```
@@ -57,6 +62,64 @@ The application uses [Neon PostgreSQL](https://neon.tech/), a fully managed serv
 - **Host**: ep-wild-pine-a6z492pc-pooler.us-west-2.aws.neon.tech
 - **Port**: 5432
 - **Connection String**: Already configured in .env file
+
+## Database Models
+
+### User Model
+
+The User model now includes subscription-related fields:
+
+```python
+class User(db.Model):
+    __tablename__ = 'users'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
+    
+    # Subscription related fields
+    stripe_customer_id = db.Column(db.String(255), nullable=True)
+    subscription_id = db.Column(db.String(255), nullable=True)
+    subscription_status = db.Column(db.String(50), nullable=True)
+    tier = db.Column(db.String(50), default='free')
+    scenarios_accessed = db.Column(db.Integer, default=0)
+    last_reset = db.Column(db.Date, default=date.today)
+    
+    # Relationships
+    conversations = db.relationship('Conversation', backref='user', lazy=True, cascade='all, delete-orphan')
+```
+
+### Subscription Tiers
+
+The application supports three subscription tiers:
+
+1. **Free**
+   - 5 conversation scenarios per month
+   - Basic features only
+
+2. **Basic**
+   - 20 conversation scenarios per month
+   - Advanced conversational features
+   - $4.99/month
+
+3. **Premium**
+   - Unlimited conversation scenarios
+   - All features including detailed feedback analysis
+   - $9.99/month
+
+## Subscription Management
+
+A subscription management utility is provided in `subscription_manager.py`:
+
+```bash
+python subscription_manager.py
+```
+
+This utility provides functions to:
+- Check and enforce monthly scenario limits
+- Upgrade users to premium tiers
+- Cancel subscriptions
+- List subscribers
 
 ## API Endpoints
 
@@ -77,13 +140,6 @@ The application uses [Neon PostgreSQL](https://neon.tech/), a fully managed serv
 {
   "success": true,
   "message": "User registered successfully"
-}
-```
-- **Error Response**: 
-```json
-{
-  "success": false,
-  "message": "Email already registered"
 }
 ```
 
@@ -107,13 +163,6 @@ The application uses [Neon PostgreSQL](https://neon.tech/), a fully managed serv
     "email": "user@example.com",
     "id": 1
   }
-}
-```
-- **Error Response**: 
-```json
-{
-  "success": false,
-  "message": "Invalid credentials"
 }
 ```
 
@@ -178,6 +227,57 @@ The application uses [Neon PostgreSQL](https://neon.tech/), a fully managed serv
 - **Authentication**: JWT token required
 - **Success Response**: Progress tracking data
 
+### Subscription Management
+
+#### Get user subscription info
+- **URL**: `/api/subscription`
+- **Method**: `GET`
+- **Authentication**: JWT token required
+- **Success Response**: 
+```json
+{
+  "success": true,
+  "tier": "free",
+  "status": null,
+  "scenarios_used": 3,
+  "scenarios_limit": 5,
+  "reset_date": "2025-04-28"
+}
+```
+
+#### Upgrade subscription
+- **URL**: `/api/subscription/upgrade`
+- **Method**: `POST`
+- **Authentication**: JWT token required
+- **Body**:
+```json
+{
+  "tier": "premium",
+  "payment_method_id": "pm_card_visa"
+}
+```
+- **Success Response**: 
+```json
+{
+  "success": true,
+  "message": "Subscription upgraded to premium",
+  "tier": "premium",
+  "subscription_id": "sub_12345"
+}
+```
+
+#### Cancel subscription
+- **URL**: `/api/subscription/cancel`
+- **Method**: `POST`
+- **Authentication**: JWT token required
+- **Success Response**: 
+```json
+{
+  "success": true,
+  "message": "Subscription canceled successfully"
+}
+```
+
 ## Performance Features
 
 The API includes several optimizations:
@@ -196,6 +296,25 @@ python test_endpoints.py
 ```
 
 This script will run tests on all endpoints including cache performance, rate limiting, and concurrent request handling.
+
+## Database Migrations
+
+The application uses Flask-Migrate for database migrations:
+
+1. Generate a migration:
+```bash
+flask db migrate -m "description of changes"
+```
+
+2. Apply migrations:
+```bash
+flask db upgrade
+```
+
+3. Rollback a migration:
+```bash
+flask db downgrade
+```
 
 ## Security
 

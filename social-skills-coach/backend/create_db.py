@@ -6,8 +6,10 @@ This will create all necessary tables defined in the app models.
 
 import os
 import sys
+from datetime import date
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
+from flask_migrate import Migrate
 import config
 import sqlalchemy as sa
 from sqlalchemy import inspect
@@ -57,6 +59,7 @@ def create_app():
     
     # Initialize the database
     db = SQLAlchemy(app)
+    migrate = Migrate(app, db)
     
     # Define minimal models here to avoid circular imports
     class User(db.Model):
@@ -64,6 +67,14 @@ def create_app():
         id = db.Column(db.Integer, primary_key=True)
         email = db.Column(db.String(120), unique=True, nullable=False)
         password_hash = db.Column(db.String(255), nullable=False)
+        
+        # Subscription related fields
+        stripe_customer_id = db.Column(db.String(255), nullable=True)
+        subscription_id = db.Column(db.String(255), nullable=True)
+        subscription_status = db.Column(db.String(50), nullable=True)
+        tier = db.Column(db.String(50), default='free')
+        scenarios_accessed = db.Column(db.Integer, default=0)
+        last_reset = db.Column(db.Date, default=date.today)
     
     class Conversation(db.Model):
         __tablename__ = 'conversations'
@@ -133,13 +144,17 @@ def create_test_user(app, db, User):
                 # Create new user
                 test_user = User(
                     email="test@example.com",
-                    password_hash=sha256_crypt.hash("password123")
+                    password_hash=sha256_crypt.hash("password123"),
+                    tier='free',
+                    scenarios_accessed=0,
+                    last_reset=date.today()
                 )
                 db.session.add(test_user)
                 db.session.commit()
                 print("Test user created successfully:")
                 print("- Email: test@example.com")
                 print("- Password: password123")
+                print("- Tier: free")
             else:
                 print(f"\nSkipping test user creation: {user_count} users already exist")
         except Exception as e:
