@@ -46,6 +46,19 @@ client = OpenAI(api_key=config.OPENAI_API_KEY)
 # Stripe Configuration
 stripe.api_key = config.STRIPE_API_KEY
 
+# Conversation categories and tier requirements
+CATEGORIES = {
+    'small_talk': 'free',
+    'introductions': 'free',
+    'networking': 'basic',
+    'conflict_resolution': 'basic',
+    'job_interviews': 'premium',
+    'dating': 'premium'
+}
+
+# Tier order for comparison
+TIER_ORDER = {'free': 0, 'basic': 1, 'premium': 2}
+
 # Simple LRU cache for conversation responses
 class LRUCache:
     def __init__(self, capacity):
@@ -169,6 +182,7 @@ class Conversation(db.Model):
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
     user_input = db.Column(db.Text, nullable=False)
     ai_response = db.Column(db.Text, nullable=False)
+    category = db.Column(db.String(50), nullable=True)
     
     # Relationships
     feedbacks = db.relationship('Feedback', backref='conversation', lazy=True, cascade='all, delete-orphan')
@@ -179,6 +193,7 @@ class Feedback(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     conversation_id = db.Column(db.Integer, db.ForeignKey('conversations.id'), nullable=False)
     feedback_text = db.Column(db.Text, nullable=False)
+    score = db.Column(db.Float, nullable=True)  # Store feedback score for analytics
 
 # Import stripe_service after initializing app, db, and models
 import stripe_service
@@ -281,6 +296,26 @@ class FeedbackResource(Resource):
         
         user_input = data.get('user_input')
         
+        # Check if the user is authenticated
+        current_user_email = get_jwt_identity()
+        if current_user_email:
+            user = User.query.filter_by(email=current_user_email).first()
+            user_tier = user.tier if user else 'free'
+        else:
+            user_tier = 'free'
+        
+        # For free users, return a static message
+        if user_tier == 'free':
+            return {
+                "success": True,
+                "feedback": "Good job! Keep practicing.",
+                "analysis": {
+                    "word_count": len(user_input.split()),
+                    "tier_limited": True
+                }
+            }, 200
+        
+        # For paid users, provide detailed feedback
         # Use TextBlob to analyze sentiment
         blob = TextBlob(user_input)
         polarity = blob.sentiment.polarity
@@ -311,14 +346,55 @@ class FeedbackResource(Resource):
         if pattern_feedbacks:
             feedback_text += " " + pattern_feedbacks[0]  # Add the first matched pattern feedback
         
+        # Calculate a feedback score (0-100) based on various factors
+        score = 50  # Base score
+        
+        # Adjust based on sentiment
+        if -0.1 <= polarity <= 0.5:  # Neutral to slightly positive is good
+            score += 10
+        elif polarity > 0.5:  # Too positive might be inauthentic
+            score += 5
+        elif polarity < -0.2:  # Too negative is not good
+            score -= 10
+            
+        # Adjust based on word count (neither too short nor too long)
+        word_count = len(user_input.split())
+        if 10 <= word_count <= 30:
+            score += 10
+        elif word_count < 5:
+            score -= 10
+            
+        # Adjust based on questions (engagement)
+        if '?' in user_input:
+            score += 10
+            
+        # Adjust based on pattern matches (poor communication habits)
+        score -= len(pattern_feedbacks) * 5
+        
+        # Ensure score is within 0-100 range
+        score = max(0, min(100, score))
+        
+        # Save the feedback score if user is authenticated
+        if current_user_email and 'conversation_id' in data:
+            try:
+                conversation_id = data.get('conversation_id')
+                feedback_record = Feedback.query.filter_by(conversation_id=conversation_id).first()
+                if feedback_record:
+                    feedback_record.score = score
+                    db.session.commit()
+                    logger.info(f"Updated feedback score for conversation {conversation_id}")
+            except Exception as e:
+                logger.error(f"Error saving feedback score: {str(e)}")
+        
         return {
             "success": True,
             "feedback": feedback_text,
             "analysis": {
                 "polarity": polarity,
                 "subjectivity": subjectivity,
-                "word_count": len(user_input.split()),
-                "pattern_matches": pattern_feedbacks
+                "word_count": word_count,
+                "pattern_matches": pattern_feedbacks,
+                "score": score
             }
         }, 200
 
@@ -334,6 +410,14 @@ class ConversationResource(Resource):
             return {"success": False, "message": "User input is required"}, 400
         
         user_input = data.get('user_input')
+        category = data.get('category', 'small_talk')  # Default to small_talk if not specified
+        
+        # Validate the category
+        if category not in CATEGORIES:
+            return {
+                "success": False,
+                "message": f"Invalid category. Available categories: {', '.join(CATEGORIES.keys())}"
+            }, 400
         
         # Get the current user if authenticated
         current_user_email = get_jwt_identity()
@@ -342,22 +426,48 @@ class ConversationResource(Resource):
         if current_user_email:
             user = User.query.filter_by(email=current_user_email).first()
             
-            # Check subscription limits for authenticated users
             if user:
-                # Check if user has access based on their tier
-                can_access, message = stripe_service.check_scenario_access(user)
-                if not can_access:
+                # Get user tier and required tier for the category
+                user_tier = user.tier or 'free'
+                required_tier = CATEGORIES[category]
+                
+                # Check if user has access to this category based on their tier
+                if TIER_ORDER[user_tier] < TIER_ORDER[required_tier]:
                     return {
-                        "success": False, 
-                        "message": message,
-                        "upgrade_needed": True
+                        "success": False,
+                        "message": f"Upgrade to {required_tier} tier to access the {category} category",
+                        "upgrade_needed": True,
+                        "required_tier": required_tier
                     }, 403
                 
-                # Increment usage counter on successful request
-                stripe_service.increment_scenario_count(user)
+                # For free users, check monthly usage limits
+                if user_tier == 'free':
+                    today = date.today()
+                    
+                    # Reset counter if it's a new month
+                    if user.last_reset is None or user.last_reset.month != today.month or user.last_reset.year != today.year:
+                        user.scenarios_accessed = 0
+                        user.last_reset = today
+                        db.session.commit()
+                        logger.info(f"Reset scenario counter for user {user.id} ({user.email})")
+                    
+                    # Check if user has reached their monthly limit
+                    if user.scenarios_accessed >= 5:
+                        return {
+                            "success": False,
+                            "message": "Monthly limit reached. Upgrade for unlimited access.",
+                            "upgrade_needed": True,
+                            "scenarios_used": user.scenarios_accessed,
+                            "scenarios_limit": 5
+                        }, 403
+                    
+                    # Increment usage counter for free users
+                    user.scenarios_accessed += 1
+                    db.session.commit()
+                    logger.info(f"Incremented scenario count for user {user.id} to {user.scenarios_accessed}")
         
-        # Check cache first
-        cache_key = hash(user_input.lower().strip())
+        # Generate a cache key that includes the category
+        cache_key = hash(f"{category}:{user_input.lower().strip()}")
         cached_response = conversation_cache.get(cache_key)
         if cached_response:
             logger.info("Cache hit for conversation response")
@@ -382,10 +492,13 @@ class ConversationResource(Resource):
                 else:
                     # Use OpenAI API with timeout
                     try:
+                        # Include the category in the prompt for more contextual responses
+                        system_prompt = f"You are a social skills coach providing helpful, encouraging advice for the '{category}' context. Keep responses concise and practical."
+                        
                         response = client.chat.completions.create(
                             model="gpt-3.5-turbo",
                             messages=[
-                                {"role": "system", "content": "You are a social skills coach providing helpful, encouraging advice. Keep responses concise and practical."},
+                                {"role": "system", "content": system_prompt},
                                 {"role": "user", "content": user_input}
                             ],
                             max_tokens=150,
@@ -421,11 +534,12 @@ class ConversationResource(Resource):
         # Store conversation in database if user is authenticated
         if user:
             try:
-                # Create new conversation in database
+                # Create new conversation in database with category
                 new_conversation = Conversation(
                     user_id=user.id,
                     user_input=user_input,
-                    ai_response=ai_text
+                    ai_response=ai_text,
+                    category=category
                 )
                 db.session.add(new_conversation)
                 
@@ -444,6 +558,7 @@ class ConversationResource(Resource):
                     'user_message': user_input,
                     'ai_response': ai_text,
                     'feedback': feedback,
+                    'category': category,
                     'timestamp': 'Just now'
                 }
                 conversations_temp.append(conversation)
@@ -452,10 +567,22 @@ class ConversationResource(Resource):
                 # Continue without storing in DB if there's an error
                 pass
         
+        # For free users, include information about usage
+        usage_info = {}
+        if user and user.tier == 'free':
+            usage_info = {
+                "scenarios_used": user.scenarios_accessed,
+                "scenarios_limit": 5,
+                "remaining": 5 - user.scenarios_accessed
+            }
+        
         return {
             "success": True,
             "response": ai_text,
-            "feedback": feedback
+            "feedback": feedback,
+            "category": category,
+            "tier_required": CATEGORIES[category],
+            **usage_info
         }, 200
 
 # User Registration Resource
@@ -707,10 +834,145 @@ class ProgressTracking(Resource):
     @jwt_required()
     def get(self):
         # Get the current user from JWT
-        current_user = get_jwt_identity()
+        current_user_email = get_jwt_identity()
+        user = User.query.filter_by(email=current_user_email).first()
         
-        # In a real app, you would fetch progress data specific to this user
-        return jsonify(progress_data)
+        if not user:
+            return {"success": False, "message": "User not found"}, 404
+        
+        # Get user's tier
+        user_tier = user.tier or 'free'
+        
+        # Get conversations for this user
+        conversations = Conversation.query.filter_by(user_id=user.id).all()
+        
+        # Basic stats for all users
+        total_conversations = len(conversations)
+        
+        # Base response for free users
+        response = {
+            "success": True,
+            "scenarios_completed": total_conversations,
+            "tier": user_tier
+        }
+        
+        # For basic and premium users, add category stats
+        if user_tier in ['basic', 'premium']:
+            # Calculate category breakdown
+            category_stats = {}
+            for convo in conversations:
+                category = convo.category or 'uncategorized'
+                if category not in category_stats:
+                    category_stats[category] = 0
+                category_stats[category] += 1
+            
+            # Calculate average feedback score
+            avg_score = 0
+            feedback_count = 0
+            
+            for convo in conversations:
+                feedbacks = Feedback.query.filter_by(conversation_id=convo.id).all()
+                for feedback in feedbacks:
+                    if feedback.score is not None:
+                        avg_score += feedback.score
+                        feedback_count += 1
+            
+            if feedback_count > 0:
+                avg_score = round(avg_score / feedback_count, 1)
+            
+            # Add to response
+            response.update({
+                "category_stats": category_stats,
+                "average_feedback_score": avg_score
+            })
+        
+        # For premium users, include trends over time
+        if user_tier == 'premium':
+            # Group conversations by week
+            weekly_counts = {}
+            weekly_scores = {}
+            
+            for convo in conversations:
+                # Convert timestamp to week number (e.g., "2025-W13")
+                week_key = convo.timestamp.strftime("%Y-W%V")
+                
+                if week_key not in weekly_counts:
+                    weekly_counts[week_key] = 0
+                    weekly_scores[week_key] = {"total": 0, "count": 0}
+                
+                weekly_counts[week_key] += 1
+                
+                # Add feedback scores
+                feedbacks = Feedback.query.filter_by(conversation_id=convo.id).all()
+                for feedback in feedbacks:
+                    if feedback.score is not None:
+                        weekly_scores[week_key]["total"] += feedback.score
+                        weekly_scores[week_key]["count"] += 1
+            
+            # Calculate weekly averages
+            weekly_averages = {}
+            for week, data in weekly_scores.items():
+                if data["count"] > 0:
+                    weekly_averages[week] = round(data["total"] / data["count"], 1)
+                else:
+                    weekly_averages[week] = 0
+            
+            # Format data for charting
+            trend_data = {
+                "labels": sorted(weekly_counts.keys()),
+                "conversation_counts": [weekly_counts.get(week, 0) for week in sorted(weekly_counts.keys())],
+                "score_averages": [weekly_averages.get(week, 0) for week in sorted(weekly_averages.keys())]
+            }
+            
+            # Add to response
+            response.update({
+                "trends": trend_data,
+                "improvement_areas": get_improvement_areas(conversations)
+            })
+        
+        return jsonify(response)
+
+def get_improvement_areas(conversations):
+    """Calculate areas for improvement based on feedback patterns"""
+    # Count pattern occurrences in feedback
+    pattern_counts = {}
+    low_score_categories = {}
+    
+    for convo in conversations:
+        feedbacks = Feedback.query.filter_by(conversation_id=convo.id).all()
+        category = convo.category or 'uncategorized'
+        
+        if category not in low_score_categories:
+            low_score_categories[category] = {"total": 0, "count": 0}
+        
+        for feedback in feedbacks:
+            # Count patterns in feedback text
+            for pattern, _ in FEEDBACK_PATTERNS:
+                pattern_key = pattern.replace(r'\b', '').replace('|', '_').replace('(', '').replace(')', '')
+                if re.search(pattern, feedback.feedback_text.lower()):
+                    if pattern_key not in pattern_counts:
+                        pattern_counts[pattern_key] = 0
+                    pattern_counts[pattern_key] += 1
+            
+            # Track scores by category
+            if feedback.score is not None:
+                low_score_categories[category]["total"] += feedback.score
+                low_score_categories[category]["count"] += 1
+    
+    # Calculate average scores by category
+    category_averages = {}
+    for category, data in low_score_categories.items():
+        if data["count"] > 0:
+            category_averages[category] = round(data["total"] / data["count"], 1)
+    
+    # Find common patterns and low-scoring categories
+    common_patterns = sorted(pattern_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+    worst_categories = sorted(category_averages.items(), key=lambda x: x[1])[:2]
+    
+    return {
+        "common_issues": [{"pattern": p[0], "count": p[1]} for p in common_patterns],
+        "weakest_categories": [{"category": c[0], "average_score": c[1]} for c in worst_categories]
+    }
 
 # Add resources to API
 api.add_resource(UserRegister, '/api/register')

@@ -92,23 +92,78 @@ class User(db.Model):
     conversations = db.relationship('Conversation', backref='user', lazy=True, cascade='all, delete-orphan')
 ```
 
-### Subscription Tiers
+### Conversation Model
+
+The Conversation model stores user interactions:
+
+```python
+class Conversation(db.Model):
+    __tablename__ = 'conversations'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    user_input = db.Column(db.Text, nullable=False)
+    ai_response = db.Column(db.Text, nullable=False)
+    category = db.Column(db.String(50), nullable=True)
+    
+    # Relationships
+    feedbacks = db.relationship('Feedback', backref='conversation', lazy=True, cascade='all, delete-orphan')
+```
+
+### Feedback Model
+
+The Feedback model stores feedback on conversations:
+
+```python
+class Feedback(db.Model):
+    __tablename__ = 'feedbacks'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    conversation_id = db.Column(db.Integer, db.ForeignKey('conversations.id'), nullable=False)
+    feedback_text = db.Column(db.Text, nullable=False)
+    score = db.Column(db.Float, nullable=True)  # Store feedback score for analytics
+```
+
+## Subscription Tiers
 
 The application supports three subscription tiers:
 
 1. **Free**
    - 5 conversation scenarios per month
-   - Basic features only
+   - Access to basic categories only (small_talk, introductions)
+   - Limited feedback and progress tracking
 
 2. **Basic**
    - 20 conversation scenarios per month
-   - Advanced conversational features
+   - Access to intermediate categories (networking, conflict_resolution)
+   - Advanced feedback analysis
+   - Category-based statistics
    - $4.99/month
 
 3. **Premium**
    - Unlimited conversation scenarios
-   - All features including detailed feedback analysis
+   - Access to all categories (including job_interviews, dating)
+   - Detailed feedback analysis
+   - Trend analysis and improvement suggestions
    - $9.99/month
+
+## Conversation Categories
+
+The application supports different conversation categories, each requiring a specific subscription tier:
+
+```python
+CATEGORIES = {
+    'small_talk': 'free',
+    'introductions': 'free',
+    'networking': 'basic',
+    'conflict_resolution': 'basic',
+    'job_interviews': 'premium',
+    'dating': 'premium'
+}
+```
+
+Users can only access categories available for their subscription tier or lower.
 
 ## Subscription Management
 
@@ -221,7 +276,8 @@ stripe listen --forward-to http://localhost:8000/stripe-webhook
 - **Body**:
 ```json
 {
-  "user_input": "I feel nervous before social events"
+  "user_input": "I feel nervous before social events",
+  "category": "small_talk"
 }
 ```
 - **Success Response**: 
@@ -229,15 +285,31 @@ stripe listen --forward-to http://localhost:8000/stripe-webhook
 {
   "success": true,
   "response": "It's completely normal to feel nervous. Here are some strategies to help...",
-  "feedback": "Try to be more specific about what makes you nervous"
+  "feedback": "Try to be more specific about what makes you nervous",
+  "category": "small_talk",
+  "tier_required": "free",
+  "scenarios_used": 1,
+  "scenarios_limit": 5,
+  "remaining": 4
+}
+```
+- **Premium Category Access Error**:
+```json
+{
+  "success": false,
+  "message": "Upgrade to premium tier to access the job_interviews category",
+  "upgrade_needed": true,
+  "required_tier": "premium"
 }
 ```
 - **Free Tier Limit Exceeded Response**:
 ```json
 {
   "success": false,
-  "message": "Monthly limit reached (5/5)",
-  "upgrade_needed": true
+  "message": "Monthly limit reached. Upgrade for unlimited access.",
+  "upgrade_needed": true,
+  "scenarios_used": 5,
+  "scenarios_limit": 5
 }
 ```
 
@@ -256,10 +328,22 @@ stripe listen --forward-to http://localhost:8000/stripe-webhook
 - **Body**:
 ```json
 {
-  "user_input": "I am sorry but I think I'm not good at talking to people"
+  "user_input": "I am sorry but I think I'm not good at talking to people",
+  "conversation_id": 123
 }
 ```
-- **Success Response**: 
+- **Free Tier Response**: 
+```json
+{
+  "success": true,
+  "feedback": "Good job! Keep practicing.",
+  "analysis": {
+    "word_count": 12,
+    "tier_limited": true
+  }
+}
+```
+- **Paid Tier Response**: 
 ```json
 {
   "success": true,
@@ -268,7 +352,8 @@ stripe listen --forward-to http://localhost:8000/stripe-webhook
     "polarity": -0.15,
     "subjectivity": 0.7,
     "word_count": 12,
-    "pattern_matches": ["Try to avoid apologizing too much in your conversations."]
+    "pattern_matches": ["Try to avoid apologizing too much in your conversations."],
+    "score": 65
   }
 }
 ```
@@ -279,7 +364,61 @@ stripe listen --forward-to http://localhost:8000/stripe-webhook
 - **URL**: `/api/progress`
 - **Method**: `GET`
 - **Authentication**: JWT token required
-- **Success Response**: Progress tracking data
+- **Free Tier Response**: 
+```json
+{
+  "success": true,
+  "scenarios_completed": 3,
+  "tier": "free"
+}
+```
+- **Basic Tier Response**: 
+```json
+{
+  "success": true,
+  "scenarios_completed": 15,
+  "tier": "basic",
+  "category_stats": {
+    "small_talk": 8,
+    "introductions": 4,
+    "networking": 3
+  },
+  "average_feedback_score": 72.5
+}
+```
+- **Premium Tier Response**: 
+```json
+{
+  "success": true,
+  "scenarios_completed": 37,
+  "tier": "premium",
+  "category_stats": {
+    "small_talk": 10,
+    "introductions": 5,
+    "networking": 8,
+    "conflict_resolution": 6,
+    "job_interviews": 5,
+    "dating": 3
+  },
+  "average_feedback_score": 78.3,
+  "trends": {
+    "labels": ["2025-W12", "2025-W13", "2025-W14"],
+    "conversation_counts": [10, 15, 12],
+    "score_averages": [65.5, 73.8, 78.3]
+  },
+  "improvement_areas": {
+    "common_issues": [
+      {"pattern": "sorry_apologize_apologies", "count": 8},
+      {"pattern": "maybe_perhaps_possibly", "count": 6},
+      {"pattern": "cant_cannot_can't_won't_wont", "count": 4}
+    ],
+    "weakest_categories": [
+      {"category": "job_interviews", "average_score": 65.2},
+      {"category": "networking", "average_score": 68.7}
+    ]
+  }
+}
+```
 
 ### Subscription Management
 
