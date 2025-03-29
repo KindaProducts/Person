@@ -16,6 +16,8 @@ import logging
 import re
 from threading import Lock
 from collections import OrderedDict
+import stripe
+import json
 
 # Configure logging
 logging.basicConfig(
@@ -40,6 +42,9 @@ jwt = JWTManager(app)
 
 # OpenAI Configuration
 client = OpenAI(api_key=config.OPENAI_API_KEY)
+
+# Stripe Configuration
+stripe.api_key = config.STRIPE_API_KEY
 
 # Simple LRU cache for conversation responses
 class LRUCache:
@@ -175,6 +180,9 @@ class Feedback(db.Model):
     conversation_id = db.Column(db.Integer, db.ForeignKey('conversations.id'), nullable=False)
     feedback_text = db.Column(db.Text, nullable=False)
 
+# Import stripe_service after initializing app, db, and models
+import stripe_service
+
 # Placeholder responses for conversation simulation
 MOCK_RESPONSES = {
     "greeting": "Hello! I'm your social skills coach. What would you like to work on today?",
@@ -203,6 +211,54 @@ progress_data = {
 @app.route('/')
 def home():
     return 'Social Skills Coach API Running'
+
+# Stripe webhook route
+@app.route('/stripe-webhook', methods=['POST'])
+def stripe_webhook():
+    # Get the webhook request payload
+    payload = request.data
+    sig_header = request.headers.get('Stripe-Signature')
+    
+    try:
+        # Verify webhook signature
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, config.STRIPE_WEBHOOK_SECRET
+        )
+        
+        # Handle the event based on its type
+        event_type = event['type']
+        logger.info(f"Received Stripe event: {event_type}")
+        
+        if event_type == 'customer.subscription.created':
+            success, message = stripe_service.handle_subscription_created(event)
+        elif event_type == 'customer.subscription.updated':
+            success, message = stripe_service.handle_subscription_updated(event)
+        elif event_type == 'customer.subscription.deleted':
+            success, message = stripe_service.handle_subscription_deleted(event)
+        else:
+            # Log but ignore other event types
+            logger.info(f"Ignoring event type: {event_type}")
+            return jsonify({"status": "ignored", "message": f"Event type {event_type} ignored"}), 200
+        
+        # Return response based on handler result
+        if success:
+            return jsonify({"status": "success", "message": message}), 200
+        else:
+            logger.error(f"Error handling {event_type}: {message}")
+            return jsonify({"status": "error", "message": message}), 400
+            
+    except ValueError as e:
+        # Invalid payload
+        logger.error(f"Invalid Stripe webhook payload: {str(e)}")
+        return jsonify({"status": "error", "message": "Invalid payload"}), 400
+    except stripe.error.SignatureVerificationError as e:
+        # Invalid signature
+        logger.error(f"Invalid Stripe signature: {str(e)}")
+        return jsonify({"status": "error", "message": "Invalid signature"}), 400
+    except Exception as e:
+        # Any other exceptions
+        logger.error(f"Error handling Stripe webhook: {str(e)}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 # Keyword patterns for feedback enhancement
 FEEDBACK_PATTERNS = [
@@ -279,6 +335,27 @@ class ConversationResource(Resource):
         
         user_input = data.get('user_input')
         
+        # Get the current user if authenticated
+        current_user_email = get_jwt_identity()
+        user = None
+        
+        if current_user_email:
+            user = User.query.filter_by(email=current_user_email).first()
+            
+            # Check subscription limits for authenticated users
+            if user:
+                # Check if user has access based on their tier
+                can_access, message = stripe_service.check_scenario_access(user)
+                if not can_access:
+                    return {
+                        "success": False, 
+                        "message": message,
+                        "upgrade_needed": True
+                    }, 403
+                
+                # Increment usage counter on successful request
+                stripe_service.increment_scenario_count(user)
+        
         # Check cache first
         cache_key = hash(user_input.lower().strip())
         cached_response = conversation_cache.get(cache_key)
@@ -340,32 +417,27 @@ class ConversationResource(Resource):
                 # Return fallback response
                 ai_text = FALLBACK_RESPONSE
                 feedback = "Try again later for more personalized feedback."
-                
-        # Get the current user if authenticated
-        current_user_email = get_jwt_identity()
         
         # Store conversation in database if user is authenticated
-        if current_user_email:
+        if user:
             try:
-                user = User.query.filter_by(email=current_user_email).first()
-                if user:
-                    # Create new conversation in database
-                    new_conversation = Conversation(
-                        user_id=user.id,
-                        user_input=user_input,
-                        ai_response=ai_text
-                    )
-                    db.session.add(new_conversation)
-                    
-                    # Create feedback record
-                    new_feedback = Feedback(
-                        conversation_id=new_conversation.id,
-                        feedback_text=feedback
-                    )
-                    db.session.add(new_feedback)
-                    
-                    db.session.commit()
+                # Create new conversation in database
+                new_conversation = Conversation(
+                    user_id=user.id,
+                    user_input=user_input,
+                    ai_response=ai_text
+                )
+                db.session.add(new_conversation)
                 
+                # Create feedback record
+                new_feedback = Feedback(
+                    conversation_id=new_conversation.id,
+                    feedback_text=feedback
+                )
+                db.session.add(new_feedback)
+                
+                db.session.commit()
+            
                 # For compatibility with old code, also store in temporary list
                 conversation = {
                     'user_email': current_user_email,
@@ -411,6 +483,12 @@ class UserRegister(Resource):
         db.session.add(new_user)
         db.session.commit()
         
+        # Create Stripe customer for the user
+        stripe_customer_created = stripe_service.create_stripe_customer(new_user)
+        if not stripe_customer_created:
+            logger.warning(f"Failed to create Stripe customer for user {new_user.id}")
+            # Continue anyway, we can create customer later
+        
         return {"success": True, "message": "User registered successfully"}, 201
 
 # User Login Resource
@@ -437,10 +515,112 @@ class UserLogin(Resource):
                 "success": True,
                 "message": "Login successful",
                 "access_token": access_token,
-                "user": {"email": email, "id": user.id}
+                "user": {
+                    "email": email, 
+                    "id": user.id,
+                    "tier": user.tier,
+                    "subscription_status": user.subscription_status
+                }
             }, 200
         
         return {"success": False, "message": "Invalid credentials"}, 401
+
+# Subscription Resource
+class SubscriptionResource(Resource):
+    @jwt_required()
+    def get(self):
+        """Get current user's subscription info"""
+        current_user_email = get_jwt_identity()
+        user = User.query.filter_by(email=current_user_email).first()
+        
+        if not user:
+            return {"success": False, "message": "User not found"}, 404
+        
+        # Get tier information from subscription_manager
+        tier = user.tier or 'free'
+        tier_info = stripe_service.SUBSCRIPTION_TIERS.get(tier, stripe_service.SUBSCRIPTION_TIERS['free'])
+        
+        # Calculate days until reset
+        today = date.today()
+        if user.last_reset:
+            # If it's a new month, the reset date would be today
+            if user.last_reset.month != today.month or user.last_reset.year != today.year:
+                next_reset = today
+            else:
+                # Otherwise, the reset will be on the same day next month
+                next_month = today.month + 1 if today.month < 12 else 1
+                next_year = today.year if today.month < 12 else today.year + 1
+                next_reset = date(next_year, next_month, user.last_reset.day)
+        else:
+            next_reset = today
+        
+        return {
+            "success": True,
+            "tier": tier,
+            "status": user.subscription_status,
+            "scenarios_used": user.scenarios_accessed,
+            "scenarios_limit": tier_info['monthly_scenarios'] if tier_info['monthly_scenarios'] != float('inf') else "unlimited",
+            "reset_date": next_reset.strftime('%Y-%m-%d'),
+            "features": {
+                "advanced_features": tier_info['advanced_features'],
+                "feedback_analysis": tier_info['feedback_analysis']
+            }
+        }, 200
+        
+    @jwt_required()
+    def post(self):
+        """Create a subscription checkout session"""
+        current_user_email = get_jwt_identity()
+        user = User.query.filter_by(email=current_user_email).first()
+        
+        if not user:
+            return {"success": False, "message": "User not found"}, 404
+        
+        data = request.get_json()
+        if not data or 'tier' not in data:
+            return {"success": False, "message": "Tier is required"}, 400
+            
+        tier = data.get('tier')
+        
+        # Validate tier
+        if tier not in ['basic', 'premium']:
+            return {"success": False, "message": "Invalid tier. Choose 'basic' or 'premium'"}, 400
+        
+        # Create checkout session
+        checkout_url = stripe_service.create_checkout_session(user, tier)
+        
+        if not checkout_url:
+            return {"success": False, "message": "Failed to create checkout session"}, 500
+            
+        return {
+            "success": True,
+            "checkout_url": checkout_url
+        }, 200
+
+# Subscription Cancel Resource
+class SubscriptionCancelResource(Resource):
+    @jwt_required()
+    def post(self):
+        """Cancel user's subscription"""
+        current_user_email = get_jwt_identity()
+        user = User.query.filter_by(email=current_user_email).first()
+        
+        if not user:
+            return {"success": False, "message": "User not found"}, 404
+            
+        if not user.subscription_id:
+            return {"success": False, "message": "No active subscription found"}, 400
+            
+        # Cancel the subscription
+        success = stripe_service.cancel_subscription(user)
+        
+        if not success:
+            return {"success": False, "message": "Failed to cancel subscription"}, 500
+            
+        return {
+            "success": True,
+            "message": "Subscription canceled successfully"
+        }, 200
 
 # Conversation Practice Resource
 class ConversationPractice(Resource):
@@ -539,6 +719,8 @@ api.add_resource(ConversationPractice, '/api/practice')
 api.add_resource(ProgressTracking, '/api/progress')
 api.add_resource(ConversationResource, '/api/conversation')
 api.add_resource(FeedbackResource, '/api/feedback')
+api.add_resource(SubscriptionResource, '/api/subscription')
+api.add_resource(SubscriptionCancelResource, '/api/subscription/cancel')
 
 if __name__ == '__main__':
     app.run(debug=config.DEBUG, host=config.HOST, port=config.PORT)
